@@ -452,14 +452,34 @@ def process_row(row: pd.Series, domains: List[str]) -> Optional[Tuple[str, str]]
             continue
             
         try:
+            # Если настроены verify‑прокси — пробуем ТОЛЬКО через них (без fallback на direct)
             if VERIFY_PROXY_LIST:
-                proxy = get_next_proxy("verify")
-                if proxy and verify_email_with_proxy(cleaned_email, mx_servers, proxy):
-                    print(f"✅ Найден валидный email (через прокси): {email}")
-                    save_to_blacklist(normalized_nick)
-                    PROCESSED_NICKS_CACHE.add(normalized_nick)
-                    return email, seller_name
-            
+                # попробуем столько прокси, сколько в списке (get_next_proxy поворачивает курсор)
+                tried_any = False
+                total_proxies = len(VERIFY_PROXY_LIST)
+                for _ in range(total_proxies):
+                    proxy = get_next_proxy("verify")
+                    if not proxy:
+                        break
+                    tried_any = True
+                    try:
+                        if verify_email_with_proxy(cleaned_email, mx_servers, proxy):
+                            print(f"✅ Найден валидный email (через прокси): {email}")
+                            save_to_blacklist(normalized_nick)
+                            PROCESSED_NICKS_CACHE.add(normalized_nick)
+                            return email, seller_name
+                        else:
+                            # лог для диагностики — прокси не подтвердил адрес
+                            log_error(f"Проверка {email} через прокси {proxy['host']}:{proxy['port']} вернула False")
+                    except Exception as e:
+                        log_error(f"Ошибка проверки {email} через прокси {proxy['host']}:{proxy['port']}: {e}")
+                        # продолжаем пробовать следующие прокси
+                        continue
+                # если был хоть один прокси и ни один не сработал — НЕ делаем прямой фоллбэк, идём к следующему домену
+                if tried_any:
+                    continue
+
+            # Если прокси нет (VERIFY_PROXY_LIST пуст) — обычная direct проверка
             if verify_email(cleaned_email, mx_servers):
                 print(f"✅ Найден валидный email: {email}")
                 save_to_blacklist(normalized_nick)
@@ -650,4 +670,5 @@ if __name__ == "__main__":
     parser.add_argument('input_file', type=str, help='Path to input Excel file')
     args = parser.parse_args()
     
+
     main(args.input_file)
